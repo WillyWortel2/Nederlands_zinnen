@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zinnen Correct Formuleren - VMBO Basis Nederlands</title>
+    <!-- Tailwind CSS CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        /* Custom scrollbar for better UX */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center py-12 px-4">
+    <div class="max-w-3xl w-full bg-white p-8 rounded-lg shadow-xl border border-gray-200">
+        <h1 class="text-3xl font-extrabold text-indigo-800 mb-6 text-center">Formuleer Correcte Zinnen</h1>
+        <p class="text-gray-700 mb-8 text-center leading-relaxed">
+            Welkom, leerling! In deze oefening ga je een verhaal schrijven. Na iedere zin die je typt, druk je op 'Enter' om directe feedback te ontvangen. Ik help je met spellingsfouten, geef hints over de zinsopbouw en suggesties voor het gebruik van voegwoorden om je zinnen langer en mooier te maken. Ga van start met je verhaal!
+        </p>
+
+        <div class="mb-6">
+            <label for="storyInput" class="block text-lg font-semibold text-gray-800 mb-2">Jouw verhaal:</label>
+            <textarea
+                id="storyInput"
+                class="w-full p-4 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-gray-900 leading-relaxed transition duration-150 ease-in-out resize-y min-h-[150px] shadow-sm"
+                placeholder="Begin hier met je verhaal. Bijvoorbeeld: 'Ik loop naar school.' Druk dan op Enter."
+            ></textarea>
+            <p class="text-sm text-gray-500 mt-2">
+                Tip: Druk op 'Enter' na elke zin om feedback te krijgen. Gebruik 'Shift + Enter' voor een nieuwe regel zonder feedback als je binnen dezelfde "gedachte" blijft.
+            </p>
+        </div>
+
+        <div id="feedbackArea" class="mt-8 p-4 bg-gray-50 border border-gray-200 rounded-lg shadow-inner max-h-96 overflow-y-auto">
+            <p class="text-gray-600 italic">Hier verschijnt de feedback op je zinnen.</p>
+        </div>
+    </div>
+
+    <script>
+        // Global variables to manage the state of the story and feedback
+        let previousRawText = ""; // Stores the full textarea content from the last successful processing
+        let feedbackHistory = []; // Stores { original: string, feedback: string, status: 'pending'|'processed'|'error' } for each submitted line
+
+        /**
+         * Processes the last entered sentence (line) in the textarea.
+         * It identifies newly added content, sends it to the Gemini API via a proxy,
+         * and updates the feedback area.
+         */
+        async function processLastSentence() {
+            const textarea = document.getElementById('storyInput');
+            const currentRawText = textarea.value;
+
+            // Extract content that has been newly added since the last processing.
+            // This is robust against the user typing multiple sentences before hitting Enter,
+            // or editing a previous sentence (though the current logic primarily focuses on new additions).
+            const newContentChunk = currentRawText.substring(previousRawText.length);
+            const newLines = newContentChunk.split('\n').filter(line => line.trim() !== '');
+
+            // If there's no new, non-empty line to process, or if the user only added newlines/spaces
+            if (newLines.length === 0) {
+                previousRawText = currentRawText; // Update reference even if nothing was processed
+                return;
+            }
+
+            // The sentence to process is the last *complete* non-empty line typed by the user.
+            // This handles cases where user types multiple lines and then hits Enter,
+            // or just hits Enter multiple times.
+            const sentenceToProcess = newLines[newLines.length - 1];
+
+            if (!sentenceToProcess.trim()) {
+                // If the "sentence" is just whitespace after splitting, ignore.
+                previousRawText = currentRawText;
+                return;
+            }
+
+            // Add a new entry to the feedback history array.
+            // The index is simply the current length of the array.
+            const currentLineIndex = feedbackHistory.length;
+            feedbackHistory.push({ original: sentenceToProcess, feedback: '', status: 'pending' });
+
+            // Immediately update the UI to show a loading state for the new sentence.
+            displayAllFeedback();
+
+            try {
+                // Prepare the payload for the Gemini API call
+                const payload = {
+                    model: "gemini-pro",
+                    // The prompt instructs Gemini to act as a VMBO Basis Dutch teacher,
+                    // providing specific types of feedback (spelling, sentence structure, conjunctions).
+                    // It also defines the required output format.
+                    prompt: `Je bent een ondersteunende docent Nederlands voor VMBO Basis. Je analyseert de volgende zin van een leerling. Geef altijd concrete feedback gericht op spelling, zinsopbouw en het eventuele gebruik van voegwoorden om langere zinnen te maken.
+            
+            Je feedback moet in het Nederlands zijn en de volgende structuur volgen:
+            1.  De gecorrigeerde zin (indien nodig).
+            2.  Een uitleg waarom de correcties of suggesties zijn gedaan. Focus op simpele, duidelijke taal.
+            
+            Voorbeeld:
+            Leerling: "Ik ben gisteren naarde winkel gegaan en ik heb een boek gekogt."
+            Jouw feedback: "Ik ben gisteren naar de winkel gegaan en ik heb een boek gekocht.
+            
+            Uitleg:
+            -   'naarde' moet 'naar de' zijn. Let op spaties en het correcte voorzetsel.
+            -   'gekogt' moet 'gekocht' zijn. Dit is een veelvoorkomende spelfout; werkwoorden eindigen vaak op -t of -d.
+            -   De zin is prima, maar je kunt ook 'terwijl ik boodschappen deed, heb ik een boek gekocht' proberen om variatie in zinsbouw te krijgen."
+            
+            Begin nu met de analyse van de volgende zin:
+            "${sentenceToProcess}"`,
+                    temperature: 0.5 // Controls the randomness of the output (lower is more deterministic)
+                };
+
+                // Send the POST request to the Google Apps Script proxy
+                const response = await fetch('https://script.google.com/macros/s/AKfycbwh-5mRBnGkDrF0OuZMl_pK3XsuZqbvr-fXmgolsGaaikI8H2EiiCPCaqOod5I52DBI6g/exec', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                // Check if the request was successful
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                // Parse the JSON response
+                const data = await response.json();
+                // Extract the feedback text from the Gemini response structure
+                const geminiFeedback = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text
+                                     ? data.candidates[0].content.parts[0].text
+                                     : 'Geen feedback ontvangen van de AI. Probeer het opnieuw.';
+                
+                // Update the specific entry in the feedback history
+                if (feedbackHistory[currentLineIndex]) {
+                    feedbackHistory[currentLineIndex].feedback = geminiFeedback;
+                    feedbackHistory[currentLineIndex].status = 'processed';
+                }
+
+            } catch (error) {
+                // Handle any errors during the fetch or processing
+                console.error('Fout bij het ophalen van feedback:', error);
+                if (feedbackHistory[currentLineIndex]) {
+                    feedbackHistory[currentLineIndex].feedback = `Er is een fout opgetreden bij het ophalen van feedback voor deze zin. Probeer het later opnieuw. (${error.message})`;
+                    feedbackHistory[currentLineIndex].status = 'error';
+                }
+            } finally {
+                // Always update the previousRawText to the current state of the textarea
+                // and refresh the display of all feedback, regardless of success or failure.
+                previousRawText = currentRawText; 
+                displayAllFeedback(); 
+            }
+        }
+
+        /**
+         * Renders all stored feedback messages in the feedback area.
+         * It iterates through `feedbackHistory` and creates HTML elements for each.
+         */
+        function displayAllFeedback() {
+            const feedbackDiv = document.getElementById('feedbackArea');
+            let fullFeedbackHtml = '';
+
+            feedbackHistory.forEach((item, index) => {
+                const originalLine = item.original.trim(); // Trim for cleaner display
+
+                if (originalLine === '') { 
+                    return; // Skip displaying empty lines
+                }
+
+                let bgClass = 'bg-gray-50 border border-gray-200';
+                let textClass = 'text-gray-700';
+                let spinner = '';
+
+                // Apply specific styling based on the status of the feedback
+                if (item.status === 'pending') {
+                    bgClass = 'bg-yellow-50 border border-yellow-200';
+                    textClass = 'text-yellow-700';
+                    spinner = `<svg class="inline-block animate-spin -ml-1 mr-2 h-4 w-4 text-yellow-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>`; // SVG for loading spinner
+                } else if (item.status === 'processed') {
+                    bgClass = 'bg-indigo-50 border border-indigo-200';
+                    textClass = 'text-indigo-700';
+                } else if (item.status === 'error') {
+                    bgClass = 'bg-red-50 border border-red-200';
+                    textClass = 'text-red-700';
+                }
+
+                // Construct the HTML for each feedback item
+                fullFeedbackHtml += `
+                    <div class="mb-4 p-3 rounded-lg ${bgClass}">
+                        <p class="font-semibold ${textClass}">Zin ${index + 1}: <span class="text-gray-800 font-normal italic">"${originalLine}"</span></p>
+                        <div class="mt-2 text-gray-700 text-sm whitespace-pre-wrap">${spinner}${item.status === 'pending' ? 'Feedback wordt geladen...' : item.feedback}</div>
+                    </div>
+                `;
+            });
+
+            feedbackDiv.innerHTML = fullFeedbackHtml;
+            // Scroll to the bottom to show the latest feedback
+            feedbackDiv.scrollTop = feedbackDiv.scrollHeight;
+        }
+
+        // Event listener for when the DOM is fully loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            const textarea = document.getElementById('storyInput');
+            textarea.addEventListener('keydown', (e) => {
+                // Check if the pressed key is 'Enter' (key code 13) and not 'Shift + Enter'
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    // Do NOT preventDefault, allow the textarea to add a new line.
+                    // This creates the desired "type sentence, hit enter for new line and feedback" flow.
+                    
+                    // Use setTimeout to ensure the textarea's `value` is updated with the new line
+                    // *before* we try to process it. A delay of 0ms just pushes it to the end of the event queue.
+                    setTimeout(processLastSentence, 0); 
+                }
+            });
+
+            // Initialize previousRawText with the current (likely empty) value of the textarea
+            previousRawText = textarea.value;
+        });
+    </script>
+</body>
+</html>
